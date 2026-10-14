@@ -144,10 +144,15 @@ function displayDir(alt, az) {
 }
 function moonPhase(date) { const jd = date.getTime() / 864e5 + 2440587.5; return (((jd - 2451550.1) / 29.530588853) % 1 + 1) % 1; }
 
-const TODAY = new Date();
-const SOL = solarParams(TODAY);
-const PHASE = moonPhase(TODAY);
-const MOON_ILLUM = (1 - Math.cos(2 * Math.PI * PHASE)) / 2;
+// 날짜 의존 값: 배경화면은 며칠씩 켜두므로 날짜가 바뀌면 다시 계산 (refreshDay)
+let TODAY, SOL, PHASE, MOON_ILLUM, DAY_KEY = '';
+function computeDay(d) {
+  TODAY = d; DAY_KEY = d.toDateString();
+  SOL = solarParams(d);
+  PHASE = moonPhase(d);
+  MOON_ILLUM = (1 - Math.cos(2 * Math.PI * PHASE)) / 2;
+}
+computeDay(new Date());
 
 // ───────── 계절 팔레트
 const SEASONS = {
@@ -437,7 +442,7 @@ const grassMat = new THREE.ShaderMaterial({
       float s = uTrailS[i];
       if (s <= 0.002) continue;
       vec2 d = iPos.xz - uTrail[i].xy; float dist = length(d);
-      float R = 0.95 + 0.35 * s;
+      float R = 0.4 + 0.15 * s;
       if (dist < R) { float k = 1.0 - dist / R; k = k * k * s; bend += (d / (dist + 1e-3)) * k * 1.7 + uTrail[i].zw * k * 0.45; }
     }
     float b = length(bend);
@@ -739,7 +744,15 @@ resize();
 // ───────── UI
 const $ = id => document.getElementById(id);
 const ui = { clock: $('clock'), mode: $('mode'), meta: $('meta'), wx: $('wx'), hour: $('hour'), live: $('live'), lapse: $('lapse') };
-ui.meta.textContent = `서울 기준 · 일출 ${fmt(SOL.rise)} · 일몰 ${fmt(SOL.set)}`;
+const paintSunTimes = () => { ui.meta.textContent = `서울 기준 · 일출 ${fmt(SOL.rise)} · 일몰 ${fmt(SOL.set)}`; };
+paintSunTimes();
+function refreshDay() {
+  const now = new Date();
+  if (now.toDateString() === DAY_KEY) return;
+  computeDay(now);
+  U.uMoonIllum.value = MOON_ILLUM; U.uMoonPhase.value = PHASE;
+  paintSunTimes();
+}
 function setMode(m) {
   st.mode = m;
   ui.live.setAttribute('aria-pressed', m === 'live');
@@ -792,6 +805,7 @@ function paintUI(info) {
 function frame(dt) {
   st.t += dt;
   U.uTime.value = st.t;
+  if (!MANUAL) refreshDay();
   if (st.mode === 'lapse') st.hour = (st.hour + dt * 0.6) % 24;   // 하루 = 40초
   const info = updateEnvironment(dt);
   trackMouse(dt);
