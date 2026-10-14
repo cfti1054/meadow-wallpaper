@@ -1,0 +1,828 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>초원 라이브 배경화면 3D</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap">
+<style>
+/* Layout: 전체 화면 WebGL 장면이 배경화면 본체. 왼쪽 위 유리 패널은 미리보기용이며 #wallpaper 로 열면 숨김 */
+:root{
+  --night:#05070f;
+  --glass:rgba(10,14,28,.42);
+  --glass-line:rgba(255,255,255,.14);
+  --ink:#f3f1ea;
+  --ink-dim:rgba(243,241,234,.64);
+  --sun:#ffc56b;
+  --font-ui:"IBM Plex Sans KR","Apple SD Gothic Neo","Malgun Gothic",system-ui,sans-serif;
+  --font-num:"IBM Plex Mono",ui-monospace,"SF Mono",Consolas,monospace;
+  color-scheme:dark;
+}
+[hidden]{display:none!important}
+html,body{height:100%}
+body{background:var(--night);color:var(--ink);font-family:var(--font-ui);overflow:hidden;
+  padding-left:max(0px,env(safe-area-inset-left,0px));padding-right:max(0px,env(safe-area-inset-right,0px))}
+canvas{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none}
+.vignette{position:fixed;inset:0;pointer-events:none;background:radial-gradient(120% 90% at 50% 45%,transparent 55%,rgba(0,0,8,.32) 100%)}
+.panel{position:fixed;top:calc(16px + env(safe-area-inset-top,0px));left:max(16px,env(safe-area-inset-left,0px));
+  width:min(320px,calc(100% - 32px));padding:14px 16px 16px;border-radius:14px;
+  background:var(--glass);border:1px solid var(--glass-line);
+  backdrop-filter:blur(16px) saturate(1.25);-webkit-backdrop-filter:blur(16px) saturate(1.25);
+  display:grid;gap:10px;font-size:13px;line-height:1.45}
+.clock{display:flex;align-items:baseline;gap:10px}
+.clock b{font-family:var(--font-num);font-size:30px;font-weight:500;letter-spacing:.02em;font-variant-numeric:tabular-nums}
+.mode{font-size:11px;letter-spacing:.08em;color:var(--sun)}
+.meta{color:var(--ink-dim);font-variant-numeric:tabular-nums}
+label{font-size:12px;color:var(--ink-dim)}
+input[type=range]{width:100%;accent-color:var(--sun)}
+.row{display:flex;gap:8px;flex-wrap:wrap}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.grid2 > div{display:grid;gap:4px;min-width:0}
+select{font:inherit;font-size:12px;color:var(--ink);background:rgba(255,255,255,.08);border:1px solid var(--glass-line);border-radius:8px;padding:5px 6px;width:100%}
+select option{color:#111;background:#f3f1ea}
+button{font:inherit;font-size:12px;color:var(--ink);background:rgba(255,255,255,.08);border:1px solid var(--glass-line);
+  border-radius:999px;padding:5px 12px;cursor:pointer}
+button[aria-pressed=true]{background:var(--sun);color:#2a1a05;border-color:transparent}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--sun);outline-offset:2px}
+.hint{color:var(--ink-dim);font-size:12px}
+.reveal{position:fixed;top:calc(16px + env(safe-area-inset-top,0px));left:max(16px,env(safe-area-inset-left,0px))}
+.err{position:fixed;inset:auto 16px 16px 16px;color:var(--ink);font-size:13px}
+</style>
+
+</head>
+<body>
+<div class="vignette"></div>
+<div class="panel" id="panel">
+  <div class="clock"><b id="clock">--:--</b><span class="mode" id="mode">실시간</span></div>
+  <div class="meta" id="meta">서울 기준 · 일출 --:-- · 일몰 --:--</div>
+  <div class="meta" id="wx">날씨 확인 중…</div>
+  <div>
+    <label for="hour">시간대 미리보기</label>
+    <input id="hour" type="range" min="0" max="24" step="0.05" value="12">
+  </div>
+  <div class="grid2">
+    <div><label for="season">계절</label>
+      <select id="season"><option value="auto">자동 (오늘 날짜)</option><option value="spring">봄</option><option value="summer">여름</option><option value="autumn">가을</option><option value="winter">겨울</option></select></div>
+    <div><label for="weather">날씨</label>
+      <select id="weather"><option value="auto">실시간 (서울)</option><option value="clear">맑음</option><option value="partly">구름 조금</option><option value="cloudy">흐림</option><option value="fog">안개</option><option value="rain">비</option><option value="snow">눈</option></select></div>
+  </div>
+  <div class="row">
+    <button id="live" aria-pressed="true">실시간</button>
+    <button id="lapse" aria-pressed="false">하루 타임랩스</button>
+    <button id="hide">패널 숨기기</button>
+  </div>
+  <div class="hint">잔디 위로 마우스를 지나가 보세요. H 키로 패널을 숨길 수 있습니다.</div>
+</div>
+<button class="reveal" id="reveal" hidden>패널</button>
+
+<script src="vendor/three.min.js"></script>
+<script>
+(() => {
+'use strict';
+if (!window.THREE) { document.body.insertAdjacentHTML('beforeend', '<div class="err">3D 엔진을 불러오지 못했습니다. 인터넷 연결을 확인한 뒤 새로고침해 주세요.</div>'); return; }
+
+// ───────── 설정
+const LAT = 37.57, LON = 126.98;           // 서울
+const qs = new URLSearchParams(location.search);
+const MANUAL = qs.has('manual');
+const QUALITY = { low: 60000, med: 130000, high: 230000 }[qs.get('q')] || (Math.max(screen.width, screen.height) * (devicePixelRatio || 1) > 2600 ? 160000 : 130000);
+const FPS_CAP = +qs.get('fps') || 0;
+const TRAIL = 16;
+
+// ───────── 유틸
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+const D2R = Math.PI / 180;
+const lin = h => { const c = new THREE.Color(h); return new THREE.Vector3(Math.pow(c.r, 2.2), Math.pow(c.g, 2.2), Math.pow(c.b, 2.2)); };
+const vlerp = (a, b, t) => a.clone().lerp(b, t);
+const fmt = h => { h = ((h % 24) + 24) % 24; const m = Math.round(h * 60); return String(Math.floor(m / 60) % 24).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0'); };
+let seed = 11; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+
+// JS 값 노이즈 (지형용)
+const hash2 = (x, y) => { const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453; return s - Math.floor(s); };
+function vnoise(x, y) { const ix = Math.floor(x), iy = Math.floor(y), fx = x - ix, fy = y - iy; const ux = fx * fx * (3 - 2 * fx), uy = fy * fy * (3 - 2 * fy);
+  return lerp(lerp(hash2(ix, iy), hash2(ix + 1, iy), ux), lerp(hash2(ix, iy + 1), hash2(ix + 1, iy + 1), ux), uy); }
+function fbm2(x, y, o = 5) { let s = 0, a = 0.5; for (let i = 0; i < o; i++) { s += a * vnoise(x, y); x = x * 2.03 + 17.1; y = y * 2.03 + 9.3; a *= 0.5; } return s; }
+function ridge(x, y) { let s = 0, a = 0.5; for (let i = 0; i < 5; i++) { const n = 1 - Math.abs(vnoise(x, y) * 2 - 1); s += a * n * n; x = x * 2.1 + 3.7; y = y * 2.1 + 1.9; a *= 0.5; } return s; }
+function heightAt(x, z) {
+  const D = Math.hypot(x, z);
+  const mid = smooth(10, 90, D);
+  let h = (Math.sin(x * 0.021 + 1.3) * Math.cos(z * 0.017 - 0.7) * 3.2 + Math.sin(x * 0.043 + z * 0.031) * 1.2 + (fbm2(x * 0.008, z * 0.008, 4) - 0.5) * 22) * mid;
+  const far = smooth(420, 1100, D);
+  h += far * (Math.pow(fbm2(x * 0.0017 + 4.1, z * 0.0017, 6), 1.9) * 560 * (0.55 + 0.45 * ridge(x * 0.0011, z * 0.0011)) - 25);
+  return h;
+}
+
+// ───────── 천문 (태양·달)
+function dayOfYear(d) { return Math.floor((d - new Date(d.getFullYear(), 0, 0)) / 864e5); }
+function solarParams(date) {
+  const n = dayOfYear(date);
+  const decl = 23.44 * Math.sin(2 * Math.PI * (284 + n) / 365) * D2R;
+  const B = 2 * Math.PI * (n - 81) / 364;
+  const eot = 9.87 * Math.sin(2 * B) - 7.53 * Math.cos(B) - 1.5 * Math.sin(B);
+  const tz = -date.getTimezoneOffset() / 60;
+  const lat = LAT * D2R;
+  const cosH = clamp((Math.sin(-0.833 * D2R) - Math.sin(lat) * Math.sin(decl)) / (Math.cos(lat) * Math.cos(decl)), -1, 1);
+  const H0 = Math.acos(cosH) / D2R / 15;
+  const noon = 12 + (tz * 15 - LON) / 15 - eot / 60;
+  return { decl, noon, rise: noon - H0, set: noon + H0 };
+}
+function altAz(hourAngleDeg, decl) {
+  const H = hourAngleDeg * D2R, lat = LAT * D2R;
+  const sinAlt = Math.sin(lat) * Math.sin(decl) + Math.cos(lat) * Math.cos(decl) * Math.cos(H);
+  const alt = Math.asin(clamp(sinAlt, -1, 1));
+  const az = Math.atan2(Math.sin(H), Math.cos(H) * Math.sin(lat) - Math.tan(decl) * Math.cos(lat)); // 남쪽 기준, 서쪽 +
+  return { alt: alt / D2R, az: az / D2R };
+}
+// 화면 표시용 방향: 카메라는 남쪽(-Z)을 바라봄. 고도·방위를 살짝 압축해 해가 화면을 가로지르게 함
+function displayDir(alt, az) {
+  const a = (alt > 0 ? alt * 0.6 : alt) * D2R, z = az * 0.5 * D2R;
+  return new THREE.Vector3(Math.sin(z) * Math.cos(a), Math.sin(a), -Math.cos(z) * Math.cos(a)).normalize();
+}
+function moonPhase(date) { const jd = date.getTime() / 864e5 + 2440587.5; return (((jd - 2451550.1) / 29.530588853) % 1 + 1) % 1; }
+
+const TODAY = new Date();
+const SOL = solarParams(TODAY);
+const PHASE = moonPhase(TODAY);
+const MOON_ILLUM = (1 - Math.cos(2 * Math.PI * PHASE)) / 2;
+
+// ───────── 계절 팔레트
+const SEASONS = {
+  spring: { base: '#2a4e1a', tip: '#8db456', dry: '#c2c06c', ground: '#2e3b18', far: '#6f9b40', rock: '#3f5534', hs: 0.85, snow: 0, flower: 1 },
+  summer: { base: '#22401a', tip: '#82a84a', dry: '#b0ad5a', ground: '#263412', far: '#4e7c2b', rock: '#34462f', hs: 1.12, snow: 0, flower: 0.3 },
+  autumn: { base: '#38461a', tip: '#b8a85a', dry: '#b07a36', ground: '#45391c', far: '#a08a3e', rock: '#5e4630', hs: 1.0, snow: 0, flower: 0 },
+  winter: { base: '#4d4a3a', tip: '#b8ad8a', dry: '#8e8268', ground: '#d7dde6', far: '#d9dfe8', rock: '#5c616b', hs: 0.6, snow: 1, flower: 0 },
+};
+const SEASON_KEYS = [['winter', 15], ['spring', 110], ['summer', 201], ['autumn', 298]];
+function seasonWeights(name) {
+  const w = { spring: 0, summer: 0, autumn: 0, winter: 0 };
+  if (name !== 'auto') { w[name] = 1; return w; }
+  const d = dayOfYear(TODAY);
+  for (let i = 0; i < 4; i++) {
+    const [a, da] = SEASON_KEYS[i], [b, db0] = SEASON_KEYS[(i + 1) % 4];
+    const db = db0 < da ? db0 + 365 : db0; const dd = d < da ? d + 365 : d;
+    if (dd >= da && dd < db) { const t = smooth(0, 1, (dd - da) / (db - da)); w[a] = 1 - t; w[b] = t; return w; }
+  }
+  w.winter = 1; return w;
+}
+const SEASON_NAME = { spring: '봄', summer: '여름', autumn: '가을', winter: '겨울' };
+
+// ───────── 날씨 프리셋
+const WX = {
+  clear:  { cloud: 0.26, over: 0.0,  rain: 0, snow: 0, fog: 1.0, wet: 0, wind: 0.0, label: '맑음' },
+  partly: { cloud: 0.52, over: 0.1,  rain: 0, snow: 0, fog: 1.1, wet: 0, wind: 0.1, label: '구름 조금' },
+  cloudy: { cloud: 0.86, over: 0.55, rain: 0, snow: 0, fog: 1.5, wet: 0, wind: 0.15, label: '흐림' },
+  fog:    { cloud: 0.7,  over: 0.5,  rain: 0, snow: 0, fog: 14.0, wet: 0.3, wind: -0.1, label: '안개' },
+  rain:   { cloud: 1.0,  over: 0.85, rain: 1, snow: 0, fog: 2.6, wet: 1, wind: 0.35, label: '비' },
+  snow:   { cloud: 1.0,  over: 0.8,  rain: 0, snow: 1, fog: 2.4, wet: 0, wind: 0.1, label: '눈' },
+};
+function wmoToKey(code) {
+  if (code <= 1) return 'clear'; if (code === 2) return 'partly'; if (code === 3) return 'cloudy';
+  if (code === 45 || code === 48) return 'fog';
+  if ((code >= 71 && code <= 77) || code === 85 || code === 86) return 'snow';
+  return 'rain';
+}
+
+// ───────── 렌더러 / 카메라
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance', preserveDrawingBuffer: MANUAL });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, MANUAL ? 1 : 1.5));
+renderer.setSize(innerWidth, innerHeight);
+renderer.domElement.setAttribute('aria-label', '시간·날씨·계절에 따라 변하는 3D 초원');
+document.body.prepend(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.05, 9000);
+camera.position.set(0, 1.05, 0);
+camera.lookAt(0, 1.05 + Math.tan(4 * D2R) * 100, -100);
+camera.updateMatrixWorld();
+
+// ───────── 공용 유니폼 & GLSL
+const U = {
+  uTime: { value: 0 }, uCamPos: { value: camera.position.clone() },
+  uSunDir: { value: new THREE.Vector3(0, 1, -1).normalize() }, uMoonDir: { value: new THREE.Vector3(0, -1, 0) },
+  uZenith: { value: new THREE.Vector3() }, uHorizon: { value: new THREE.Vector3() },
+  uSunsetCol: { value: lin('#ff7a3a') }, uSunsetAmt: { value: 0 },
+  uSunCol: { value: new THREE.Vector3() }, uSunVis: { value: 1 }, uSunLight: { value: new THREE.Vector3() },
+  uOvercast: { value: 0 }, uNight: { value: 0 }, uMoonIllum: { value: MOON_ILLUM }, uMoonPhase: { value: PHASE },
+  uMoonLight: { value: new THREE.Vector3() }, uMoonVis: { value: 0 },
+  uAmbSky: { value: new THREE.Vector3() }, uAmbGround: { value: new THREE.Vector3() },
+  uExposure: { value: 1 }, uFogDensity: { value: 0.0012 },
+  uCloudCover: { value: 0.3 }, uCloudWind: { value: new THREE.Vector2(0.006, 0.002) }, uStars: { value: 0 },
+};
+
+const COMMON = /* glsl */`
+uniform float uTime; uniform vec3 uCamPos;
+uniform vec3 uSunDir, uMoonDir, uZenith, uHorizon, uSunsetCol, uSunCol, uSunLight, uMoonLight, uAmbSky, uAmbGround;
+uniform float uSunsetAmt, uSunVis, uOvercast, uNight, uMoonIllum, uMoonPhase, uMoonVis, uExposure, uFogDensity, uCloudCover;
+uniform vec2 uCloudWind;
+float hash12(vec2 p){ vec3 p3 = fract(vec3(p.xyx)*0.1031); p3 += dot(p3, p3.yzx+33.33); return fract((p3.x+p3.y)*p3.z); }
+float hash13(vec3 p3){ p3 = fract(p3*0.1031); p3 += dot(p3, p3.zyx+31.32); return fract((p3.x+p3.y)*p3.z); }
+float vnoise(vec2 p){ vec2 i=floor(p), f=fract(p); vec2 u=f*f*(3.0-2.0*f);
+  return mix(mix(hash12(i),hash12(i+vec2(1,0)),u.x), mix(hash12(i+vec2(0,1)),hash12(i+vec2(1,1)),u.x), u.y); }
+float fbm(vec2 p){ float s=0.0, a=0.5; for(int i=0;i<6;i++){ s+=a*vnoise(p); p=p*2.03+vec2(17.1,9.3); a*=0.5; } return s; }
+float fbm3(vec2 p){ float s=0.0, a=0.5; for(int i=0;i<3;i++){ s+=a*vnoise(p); p=p*2.03+vec2(17.1,9.3); a*=0.5; } return s/0.875; }
+vec3 skyBase(vec3 dir){
+  float y = dir.y; float yy = max(y, 0.0);
+  vec3 col = mix(uHorizon, uZenith, pow(yy, 0.5));
+  vec2 hd = normalize(dir.xz + 1e-5), hs = normalize(uSunDir.xz + 1e-5);
+  float sd = max(dot(hd, hs), 0.0);
+  float band = pow(1.0 - yy, 5.0);
+  col = mix(col, uSunsetCol, clamp(uSunsetAmt * (0.3 + 0.7*pow(sd, 2.5)) * band, 0.0, 1.0));
+  float mu = max(dot(dir, uSunDir), 0.0);
+  col += uSunCol * (pow(mu, 6.0)*0.07 + pow(mu, 48.0)*0.4 + pow(mu, 600.0)*1.5) * uSunVis * (1.0 - uOvercast*0.85);
+  float mm = max(dot(dir, uMoonDir), 0.0);
+  col += vec3(0.35,0.45,0.7) * pow(mm, 60.0) * 0.06 * uMoonVis;
+  if (y < 0.0) col *= mix(1.0, 0.8, clamp(-y*5.0,0.0,1.0));
+  float l = dot(col, vec3(0.299,0.587,0.114));
+  col = mix(col, vec3(l)*vec3(0.94,0.97,1.03)*0.72, uOvercast*0.8);
+  return col;
+}
+float cloudDensity(vec2 uv){
+  float n = fbm(uv);
+  float lo = 0.86 - uCloudCover*0.72;
+  return smoothstep(lo, lo + 0.26, n);
+}
+// 구름 그림자: 월드 좌표 위 구름 밀도 (태양 방향으로 투영)
+float cloudShadow(vec3 wp){
+  if (uCloudCover < 0.02) return 1.0;
+  float hc = 600.0;
+  vec2 xz = wp.xz + uSunDir.xz / max(uSunDir.y, 0.12) * (hc - wp.y);
+  vec2 uv = xz / hc * 0.9 + uCloudWind * uTime;
+  float lo = 0.86 - uCloudCover*0.72;
+  float d = smoothstep(lo, lo + 0.26, fbm3(uv));
+  return 1.0 - d * 0.72;
+}
+vec3 applyFog(vec3 col, vec3 wp){
+  vec3 d = wp - uCamPos; float dist = length(d);
+  vec3 dir = d / dist; dir.y = max(dir.y, 0.0) + 0.015; dir = normalize(dir);
+  float f = 1.0 - exp(-dist * uFogDensity);
+  f *= mix(1.0, 0.75, smoothstep(10.0, 140.0, wp.y));
+  return mix(col, skyBase(dir), f);
+}
+vec3 tonemap(vec3 x){ x *= uExposure; x = (x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14); return pow(clamp(x,0.0,1.0), vec3(1.0/2.2)); }
+`;
+
+// ───────── 하늘 (대기·구름·별·달)
+const skyMat = new THREE.ShaderMaterial({
+  uniforms: U, side: THREE.BackSide, depthWrite: false,
+  vertexShader: `varying vec3 vWorld; void main(){ vec4 w = modelMatrix * vec4(position,1.0); vWorld = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; gl_Position.z = gl_Position.w; }`,
+  fragmentShader: COMMON + /* glsl */`
+  uniform float uStars;
+  varying vec3 vWorld;
+  void main(){
+    vec3 dir = normalize(vWorld - uCamPos);
+    vec3 col = skyBase(dir);
+    float y = dir.y;
+    // 별
+    if (uStars > 0.001 && y > 0.0) {
+      vec3 p = dir * 380.0; vec3 c = floor(p); float h = hash13(c);
+      if (h > 0.9965) {
+        vec3 o = vec3(hash13(c+1.3), hash13(c+2.7), hash13(c+5.1));
+        float dd = length(p - (c + o));
+        float tw = 0.65 + 0.35*sin(uTime*(1.5+h*4.0) + h*90.0);
+        float b = smoothstep(0.5, 0.0, dd) * tw * (h - 0.9965) * 300.0;
+        vec3 sc = mix(vec3(1.0,0.85,0.7), vec3(0.75,0.85,1.0), hash13(c+9.1));
+        col += sc * b * uStars * smoothstep(0.0, 0.25, y) * 1.1;
+      }
+      // 은하수 느낌의 은은한 띠
+      float band = exp(-pow(dot(dir, normalize(vec3(0.6,0.35,-0.7))), 2.0) * 18.0);
+      col += vec3(0.09,0.1,0.14) * band * fbm(dir.xz*6.0 + dir.y*3.0) * uStars * 0.9;
+    }
+    // 해
+    float mu = dot(dir, uSunDir);
+    col += uSunCol * smoothstep(0.99955, 0.99972, mu) * 22.0 * uSunVis * (1.0 - smoothstep(0.25, 0.75, uOvercast));
+    // 달 (실제 위상)
+    float md = dot(dir, uMoonDir);
+    float mr = 0.021;
+    if (md > cos(mr * 1.1) && uMoonDir.y > -0.05) {
+      vec3 right = normalize(cross(uMoonDir, vec3(0.0,1.0,0.0)));
+      vec3 upv = cross(right, uMoonDir);
+      vec2 q = vec2(dot(dir, right), dot(dir, upv)) / sin(mr);
+      float r2 = dot(q, q);
+      if (r2 < 1.0) {
+        vec3 n = vec3(q, sqrt(1.0 - r2));
+        float ph = uMoonPhase * 6.2831853;
+        vec3 L = vec3(sin(ph), 0.0, -cos(ph));
+        float lit = smoothstep(-0.03, 0.14, dot(n, L));
+        float maria = 0.72 + 0.28 * fbm(q * 2.2 + 4.0);
+        vec3 mc = vec3(1.0, 0.97, 0.9) * maria * (lit * 2.2 + 0.03);
+        float a = smoothstep(1.0, 0.93, r2) * mix(0.45, 1.0, uNight) * (1.0 - uOvercast*0.9);
+        col = mix(col, max(col, mc), a);
+      }
+    }
+    // 구름
+    if (y > 0.0 && uCloudCover > 0.01) {
+      vec2 uv = dir.xz / (y + 0.1) * 0.9 + uCloudWind * uTime;
+      float d = cloudDensity(uv);
+      if (d > 0.001) {
+        vec3 L = uNight > 0.5 ? uMoonDir : uSunDir;
+        vec2 so = normalize(L.xz + 1e-4) * 0.12;
+        float n1 = fbm(uv), n2 = fbm(uv + so);
+        float shade = clamp(0.55 + (n1 - n2) * 4.0, 0.0, 1.0);
+        vec3 lit = uSunCol * mix(1.25, 0.3, uOvercast) + uZenith * 0.5 + uMoonLight * 2.5;
+        vec3 dark = mix(uHorizon, uZenith, 0.5) * mix(0.62, 0.5, uOvercast) + uMoonLight * 0.4;
+        vec3 cc = mix(dark, lit, shade);
+        float l = dot(cc, vec3(0.3,0.59,0.11));
+        cc = mix(cc, vec3(l) * vec3(0.92,0.95,1.0) * 0.85, uOvercast * 0.7);
+        cc *= mix(1.0, mix(0.82, 0.5, 1.0 - shade), uOvercast);
+        float mu2 = max(dot(dir, uSunDir), 0.0);
+        cc += uSunCol * pow(mu2, 10.0) * (1.0 - d) * 2.0 * uSunVis;
+        float fade = smoothstep(0.0, 0.14, y);
+        col = mix(col, cc, d * fade * 0.97);
+      }
+    }
+    gl_FragColor = vec4(tonemap(col), 1.0);
+  }`,
+});
+const sky = new THREE.Mesh(new THREE.SphereGeometry(6000, 48, 24), skyMat);
+sky.renderOrder = -10; sky.frustumCulled = false;
+scene.add(sky);
+
+// ───────── 지형
+const terrainGeo = new THREE.PlaneGeometry(5200, 4600, 360, 320);
+terrainGeo.rotateX(-Math.PI / 2);
+terrainGeo.translate(0, 0, -2100);
+{
+  const p = terrainGeo.attributes.position;
+  for (let i = 0; i < p.count; i++) p.setY(i, heightAt(p.getX(i), p.getZ(i)));
+  terrainGeo.computeVertexNormals();
+}
+const terrainU = Object.assign({}, U, {
+  uGround: { value: new THREE.Vector3() }, uFieldFar: { value: new THREE.Vector3() }, uRock: { value: new THREE.Vector3() },
+  uSnow: { value: 0 }, uWet: { value: 0 },
+});
+const terrainMat = new THREE.ShaderMaterial({
+  uniforms: terrainU,
+  vertexShader: `varying vec3 vWorld; varying vec3 vN; void main(){ vec4 w = modelMatrix*vec4(position,1.0); vWorld=w.xyz; vN=normal; gl_Position = projectionMatrix*viewMatrix*w; }`,
+  fragmentShader: COMMON + /* glsl */`
+  uniform vec3 uGround, uFieldFar, uRock; uniform float uSnow, uWet;
+  varying vec3 vWorld; varying vec3 vN;
+  void main(){
+    vec3 n = normalize(vN);
+    float D = length(vWorld.xz - uCamPos.xz);
+    float macro = fbm3(vWorld.xz * 0.018);
+    float micro = vnoise(vWorld.xz * 0.9);
+    vec3 base = mix(uGround, uFieldFar, smoothstep(6.0, 70.0, D));
+    base *= 0.72 + 0.56 * macro;
+    base *= 0.88 + 0.24 * micro;
+    float shrub = smoothstep(0.6, 0.68, fbm3(vWorld.xz * 0.011 + 3.0)) * smoothstep(90.0, 160.0, D);
+    base = mix(base, uRock * (0.55 + 0.4 * vnoise(vWorld.xz * 0.15)), shrub * (1.0 - uSnow * 0.6));
+    float hill = smoothstep(30.0, 120.0, vWorld.y + D*0.02);
+    vec3 forest = uRock * (0.75 + 0.5*fbm3(vWorld.xz*0.01));
+    base = mix(base, forest, smoothstep(0.0, 1.0, hill) * smoothstep(250.0, 700.0, D));
+    float cap = smoothstep(150.0, 230.0, vWorld.y) * smoothstep(0.35, 0.8, n.y);
+    float snowAmt = max(uSnow * smoothstep(0.2, 0.7, n.y), cap * 0.9);
+    base = mix(base, vec3(0.86,0.9,0.96), snowAmt);
+    base *= mix(1.0, 0.72, uWet);
+    float sh = cloudShadow(vWorld);
+    float ndl = max(dot(n, uSunDir), 0.0);
+    vec3 amb = mix(uAmbGround, uAmbSky, 0.5 + 0.5*n.y);
+    vec3 c = base * (uSunLight * ndl * sh + amb + uMoonLight * max(dot(n, uMoonDir), 0.0));
+    c = applyFog(c, vWorld);
+    gl_FragColor = vec4(tonemap(c), 1.0);
+  }`,
+});
+const terrain = new THREE.Mesh(terrainGeo, terrainMat);
+terrain.frustumCulled = false;
+scene.add(terrain);
+
+// ───────── 3D 잔디 (인스턴싱)
+const SEG = 6;
+function bladeGeometry() {
+  const pos = [], idx = [];
+  for (let s = 0; s < SEG; s++) {
+    const t = s / SEG, w = Math.pow(1 - t, 0.62);
+    pos.push(-w, t, -1, w, t, 1);
+  }
+  pos.push(0, 1, 0);
+  for (let s = 0; s < SEG - 1; s++) { const a = s * 2; idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
+  const l = (SEG - 1) * 2; idx.push(l, l + 1, SEG * 2);
+  const g = new THREE.InstancedBufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setIndex(idx);
+  return g;
+}
+const trailVec = Array.from({ length: TRAIL }, () => new THREE.Vector4());
+const trailS = new Array(TRAIL).fill(0);
+const grassU = Object.assign({}, U, {
+  uWind: { value: 0.35 }, uWindDir: { value: new THREE.Vector2(0.86, -0.5).normalize() }, uHeightScale: { value: 1 },
+  uTrail: { value: trailVec }, uTrailS: { value: trailS },
+  uBase: { value: new THREE.Vector3() }, uTip: { value: new THREE.Vector3() }, uDry: { value: new THREE.Vector3() },
+  uSnow: { value: 0 }, uWet: { value: 0 }, uFlower: { value: 0 },
+});
+const grassMat = new THREE.ShaderMaterial({
+  uniforms: grassU, side: THREE.DoubleSide,
+  defines: { TRAIL },
+  vertexShader: COMMON + /* glsl */`
+  attribute vec3 iPos; attribute vec4 iA; attribute vec4 iB;
+  uniform float uWind, uHeightScale; uniform vec2 uWindDir;
+  uniform vec4 uTrail[TRAIL]; uniform float uTrailS[TRAIL];
+  varying float vT; varying vec3 vWorld; varying vec3 vNormal; varying float vSeed; varying float vVar; varying float vShadow; varying float vPatch;
+  void main(){
+    float t = position.y;
+    float h = iA.y * uHeightScale;
+    float rot = iA.x;
+    vec2 f = vec2(cos(rot), sin(rot));
+    vec2 sd = vec2(-f.y, f.x);
+    float ph = dot(iPos.xz, uWindDir) * 0.19 - uTime * 1.55;
+    float g = 0.5 + 0.5 * sin(ph) * (0.75 + 0.25 * sin(dot(iPos.xz, vec2(0.13, 0.29)) + uTime * 0.5));
+    float gust = 0.55 + 0.45 * sin(uTime * 0.31 + iPos.x * 0.012) * sin(uTime * 0.17 + 1.3 + iPos.z * 0.01);
+    vec2 bend = uWindDir * uWind * (0.2 + 0.8 * g) * (0.5 + 0.7 * gust) / iB.z;
+    bend += f * iB.x;
+    bend += vec2(sin(uTime * 5.5 + iA.w * 40.0), cos(uTime * 4.7 + iA.w * 31.0)) * 0.03 * (0.3 + uWind);
+    for (int i = 0; i < TRAIL; i++) {
+      float s = uTrailS[i];
+      if (s <= 0.002) continue;
+      vec2 d = iPos.xz - uTrail[i].xy; float dist = length(d);
+      float R = 0.95 + 0.35 * s;
+      if (dist < R) { float k = 1.0 - dist / R; k = k * k * s; bend += (d / (dist + 1e-3)) * k * 1.7 + uTrail[i].zw * k * 0.45; }
+    }
+    float b = length(bend);
+    if (b > 1.45) { bend *= 1.45 / b; b = 1.45; }
+    vec2 bdir = b > 1e-4 ? bend / b : f;
+    float horiz = h * b * t * t * 0.78;
+    float vert = h * t * max(1.0 - 0.3 * b * b * t * t, 0.25);
+    vec3 pos = iPos + vec3(bdir.x * horiz, vert, bdir.y * horiz) + vec3(sd.x, 0.0, sd.y) * position.x * iA.z;
+    vec3 nrm = normalize(vec3(f.x, 0.0, f.y) + vec3(sd.x, 0.0, sd.y) * position.z * 0.35 + vec3(0.0, 0.3 + 0.9 * b * t, 0.0));
+    vT = t; vWorld = pos; vNormal = nrm; vSeed = iA.w; vVar = iB.y;
+    vShadow = cloudShadow(iPos);
+    vPatch = fbm3(iPos.xz * 0.07);
+    gl_Position = projectionMatrix * viewMatrix * vec4(pos, 1.0);
+  }`,
+  fragmentShader: COMMON + /* glsl */`
+  uniform vec3 uBase, uTip, uDry; uniform float uSnow, uWet, uFlower;
+  varying float vT; varying vec3 vWorld; varying vec3 vNormal; varying float vSeed; varying float vVar; varying float vShadow; varying float vPatch;
+  void main(){
+    vec3 N = normalize(vNormal);
+    if (!gl_FrontFacing) N = vec3(-N.x, N.y, -N.z);
+    float t = vT;
+    vec3 col = mix(uBase, uTip, smoothstep(0.0, 1.0, t));
+    col = mix(col, uDry, clamp(vVar + (vPatch - 0.45) * 0.9, 0.0, 1.0) * smoothstep(0.15, 1.0, t));
+    col *= 0.78 + 0.44 * vPatch;
+    col *= 0.62 + 0.6 * vSeed;
+    float snow = uSnow * smoothstep(0.3, 1.0, t) * step(0.3, fract(vSeed * 7.13));
+    col = mix(col, vec3(0.88, 0.91, 0.96), snow * 0.85);
+    // 봄 들꽃
+    float fl = uFlower * step(0.985, fract(vSeed * 13.7)) * smoothstep(0.82, 0.95, t);
+    vec3 fc = mix(vec3(1.0, 0.92, 0.95), mix(vec3(1.0, 0.85, 0.3), vec3(0.75, 0.6, 1.0), step(0.5, fract(vSeed * 3.1))), step(0.33, fract(vSeed * 5.7)));
+    col = mix(col, fc * 0.85, fl);
+    col *= mix(1.0, 0.68, uWet);
+    vec3 V = normalize(vWorld - uCamPos);
+    float ndl = clamp((dot(N, uSunDir) + 0.45) / 1.45, 0.0, 1.0);
+    float ao = mix(0.12, 1.0, pow(t, 0.9));
+    vec3 sun = uSunLight * vShadow;
+    vec3 light = sun * ndl;
+    float back = pow(max(dot(V, uSunDir), 0.0), 3.0) * t;
+    vec3 trans = sun * back * 0.7 * vec3(1.0, 1.02, 0.78) * (1.0 - snow);
+    vec3 amb = mix(uAmbGround, uAmbSky, 0.5 + 0.5 * N.y);
+    vec3 moon = uMoonLight * clamp((dot(N, uMoonDir) + 0.5) / 1.5, 0.0, 1.0);
+    vec3 H = normalize(uSunDir - V);
+    float spec = pow(max(dot(N, H), 0.0), 28.0) * (0.05 + uWet * 0.5) * t;
+    vec3 c = col * ((light + amb + moon) * ao + trans) + sun * spec;
+    c = applyFog(c, vWorld);
+    gl_FragColor = vec4(tonemap(c), 1.0);
+  }`,
+});
+let grass = null;
+function buildGrass() {
+  if (grass) { scene.remove(grass); grass.geometry.dispose(); }
+  seed = 11;
+  const N = QUALITY;
+  const g = bladeGeometry();
+  const iPos = new Float32Array(N * 3), iA = new Float32Array(N * 4), iB = new Float32Array(N * 4);
+  const vfov = camera.fov * D2R;
+  const hfov = 2 * Math.atan(Math.tan(vfov / 2) * camera.aspect);
+  const half = hfov / 2 + 7 * D2R;
+  const dmin = 1.25, dmax = 110;
+  for (let i = 0; i < N; i++) {
+    const u = rnd();
+    const d = dmin * Math.pow(dmax / dmin, Math.pow(u, 0.9));
+    const a = (rnd() * 2 - 1) * half;
+    const x = Math.sin(a) * d, z = -Math.cos(a) * d;
+    const clump = vnoise(x * 0.35, z * 0.35);
+    iPos[i * 3] = x; iPos[i * 3 + 1] = heightAt(x, z) - 0.02; iPos[i * 3 + 2] = z;
+    const far = 1 + d * 0.03;
+    iA[i * 4] = rnd() * Math.PI * 2;
+    iA[i * 4 + 1] = (0.16 + Math.pow(rnd(), 1.4) * 0.6) * (0.6 + clump * 0.85) * (1 + d * 0.004) * smooth(dmax, dmax * 0.6, d);
+    iA[i * 4 + 2] = (0.007 + rnd() * 0.006) * far;
+    iA[i * 4 + 3] = rnd();
+    iB[i * 4] = (rnd() - 0.5) * 0.8;
+    iB[i * 4 + 1] = Math.pow(rnd(), 2.2) * (0.5 + clump);
+    iB[i * 4 + 2] = 0.75 + rnd() * 0.6;
+  }
+  g.setAttribute('iPos', new THREE.InstancedBufferAttribute(iPos, 3));
+  g.setAttribute('iA', new THREE.InstancedBufferAttribute(iA, 4));
+  g.setAttribute('iB', new THREE.InstancedBufferAttribute(iB, 4));
+  g.instanceCount = N;
+  grass = new THREE.Mesh(g, grassMat);
+  grass.frustumCulled = false;
+  scene.add(grass);
+}
+
+// ───────── 비 · 눈
+function boxAttr(N, perVert) {
+  const base = new Float32Array(N * perVert * 3), end = new Float32Array(N * perVert);
+  for (let i = 0; i < N; i++) {
+    const x = rnd() * 44, y = rnd() * 24, z = rnd() * 50;
+    for (let v = 0; v < perVert; v++) { base.set([x, y, z], (i * perVert + v) * 3); end[i * perVert + v] = v; }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(base, 3));
+  g.setAttribute('aEnd', new THREE.Float32BufferAttribute(end, 1));
+  return g;
+}
+const precipU = Object.assign({}, U, { uRain: { value: 0 }, uSnowFall: { value: 0 }, uPx: { value: 500 } });
+const rainMat = new THREE.ShaderMaterial({
+  uniforms: precipU, transparent: true, depthWrite: false,
+  vertexShader: COMMON + `uniform float uRain; attribute float aEnd; varying float vA;
+    void main(){ vec3 p = position; p.y = mod(p.y - uTime * 15.0, 24.0); p.x = mod(p.x + uTime * 2.2, 44.0) - 22.0;
+      vec3 w = vec3(p.x, p.y - 3.0, -p.z - 0.8);
+      if (aEnd > 0.5) w += vec3(2.2, 15.0, 0.0) * 0.034;
+      vA = uRain; gl_Position = projectionMatrix * viewMatrix * vec4(w, 1.0); }`,
+  fragmentShader: COMMON + `varying float vA; void main(){ vec3 c = mix(uHorizon, vec3(0.8), 0.5) * 1.4 + uAmbSky; gl_FragColor = vec4(tonemap(c), 0.32 * vA); }`,
+});
+const snowMat = new THREE.ShaderMaterial({
+  uniforms: precipU, transparent: true, depthWrite: false,
+  vertexShader: COMMON + `uniform float uSnowFall, uPx; attribute float aEnd; varying float vA;
+    void main(){ vec3 p = position; float s = hash12(p.xz);
+      p.y = mod(p.y - uTime * (0.9 + s * 0.6), 24.0);
+      p.x = mod(p.x + uTime * 0.5 + sin(uTime * (0.6 + s) + s * 20.0) * 0.6, 44.0) - 22.0;
+      vec3 w = vec3(p.x, p.y - 3.0, -p.z - 0.8);
+      vec4 mv = viewMatrix * vec4(w, 1.0);
+      gl_PointSize = (0.06 + s * 0.06) * uPx / -mv.z;
+      vA = uSnowFall; gl_Position = projectionMatrix * mv; }`,
+  fragmentShader: COMMON + `varying float vA; void main(){ vec2 q = gl_PointCoord - 0.5; float a = smoothstep(0.5, 0.1, length(q));
+      vec3 c = vec3(0.92, 0.95, 1.0) * (uAmbSky * 2.0 + uSunLight * 0.5 + 0.08); gl_FragColor = vec4(tonemap(c), a * vA * 0.9); }`,
+});
+seed = 99;
+const rain = new THREE.LineSegments(boxAttr(6000, 2), rainMat); rain.frustumCulled = false;
+const snowfall = new THREE.Points(boxAttr(5000, 1), snowMat); snowfall.frustumCulled = false;
+scene.add(rain, snowfall);
+
+// ───────── 계절 입자 (봄 꽃잎 · 여름 반딧불이 · 가을 낙엽)
+const floatU = Object.assign({}, U, { uPx: precipU.uPx, uMode: { value: new THREE.Vector4() } });
+const floatGeo = (() => {
+  const N = 420, p = new Float32Array(N * 3), s = new Float32Array(N);
+  for (let i = 0; i < N; i++) { p.set([(rnd() * 2 - 1) * 16, 0.15 + rnd() * 2.6, -2 - rnd() * 26], i * 3); s[i] = rnd(); }
+  const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(p, 3)); g.setAttribute('aS', new THREE.Float32BufferAttribute(s, 1)); return g;
+})();
+const floatMat = new THREE.ShaderMaterial({
+  uniforms: floatU, transparent: true, depthWrite: false,
+  vertexShader: COMMON + `uniform float uPx; uniform vec4 uMode; attribute float aS; varying float vType; varying float vA; varying float vS;
+    void main(){
+      float type = floor(fract(aS * 7.31) * 4.0);
+      float w = type < 0.5 ? uMode.x : type < 1.5 ? uMode.y : type < 2.5 ? uMode.z : uMode.w;
+      vA = step(fract(aS * 3.7), w);
+      vec3 p = position;
+      float t = uTime * (0.25 + aS * 0.3);
+      if (type < 0.5 || type > 2.5) { p.x += sin(t + aS * 30.0) * 1.2 + uTime * 0.25; p.y += sin(t * 1.3 + aS * 11.0) * 0.35; p.z += cos(t * 0.8 + aS * 7.0) * 0.8; }
+      else if (type < 1.5) { p.x += sin(t * 2.0 + aS * 30.0) * 0.6; p.y = 0.4 + mod(p.y + sin(t + aS) * 0.5, 2.0); p.z += cos(t + aS * 7.0) * 0.6; vA *= smoothstep(0.0, 0.3, uNight); }
+      else { p.x = mod(p.x + uTime * 0.9 + 16.0, 32.0) - 16.0; p.y = mod(p.y - uTime * 0.35 + sin(t * 3.0 + aS * 9.0) * 0.2, 2.8); }
+      p.x = mod(p.x + 16.0, 32.0) - 16.0;
+      vType = type; vS = aS;
+      vec4 mv = viewMatrix * vec4(p, 1.0);
+      float size = type < 0.5 ? 0.05 : type < 1.5 ? 0.14 : type < 2.5 ? 0.07 : 0.02;
+      gl_PointSize = size * uPx / -mv.z;
+      gl_Position = projectionMatrix * mv; }`,
+  fragmentShader: COMMON + `varying float vType; varying float vA; varying float vS;
+    void main(){
+      if (vA < 0.5) discard;
+      vec2 q = gl_PointCoord - 0.5; float r = length(q);
+      vec3 c; float a;
+      if (vType < 0.5) { c = vec3(1.0, 0.62, 0.74) * (uSunLight * 0.5 + uAmbSky * 1.2); a = smoothstep(0.5, 0.3, r); }
+      else if (vType < 1.5) { float bl = max(0.0, sin(uTime * 1.6 + vS * 40.0)); c = vec3(0.7, 1.0, 0.25) * 1.5 * bl; a = smoothstep(0.5, 0.0, r) * bl; }
+      else if (vType < 2.5) { c = mix(vec3(0.9, 0.45, 0.12), vec3(0.75, 0.6, 0.15), vS) * (uSunLight * 0.7 + uAmbSky * 1.5); a = smoothstep(0.5, 0.35, r); }
+      else { c = vec3(1.0, 0.98, 0.85) * (uSunLight * 0.8 + uAmbSky); a = smoothstep(0.5, 0.0, r) * 0.7; }
+      gl_FragColor = vec4(tonemap(c), a);
+    }`,
+});
+const floaters = new THREE.Points(floatGeo, floatMat); floaters.frustumCulled = false;
+scene.add(floaters);
+
+// ───────── 상태
+const st = {
+  t: 0, mode: 'live', hour: 12, season: 'auto', weatherSel: 'auto', liveWx: null, liveWind: 2.5, wxStatus: '날씨 확인 중…',
+  wx: Object.assign({}, WX.clear),
+  mouse: { ndc: new THREE.Vector2(), has: false, moved: false, last: null, lastAdd: 0 },
+  trail: Array.from({ length: TRAIL }, () => ({ x: 0, z: 0, vx: 0, vz: 0, age: 99, amp: 0 })), ti: 0,
+};
+
+// ───────── 하늘 키프레임 (태양 실제 고도 °)
+const SKY = [
+  [-18, '#060b1e', '#121a33'], [-12, '#08102a', '#18213e'], [-6, '#0d1840', '#2b2e52'], [-2, '#18275a', '#77506a'],
+  [0.5, '#28437e', '#e28a54'], [4, '#3362a6', '#f2b27c'], [10, '#3a74c2', '#cfdbe6'], [25, '#3570c4', '#bdd7ee'], [60, '#2763be', '#a9ccf0'],
+].map(([e, z, h]) => [e, lin(z), lin(h)]);
+function skyAt(e) {
+  let i = 0; while (i < SKY.length - 2 && e > SKY[i + 1][0]) i++;
+  const a = SKY[i], b = SKY[i + 1], t = clamp((e - a[0]) / (b[0] - a[0]), 0, 1);
+  return { zen: vlerp(a[1], b[1], t), hor: vlerp(a[2], b[2], t) };
+}
+
+function currentHour() {
+  if (st.mode === 'live') { const d = new Date(); return d.getHours() + d.getMinutes() / 60 + d.getSeconds() / 3600; }
+  return st.hour;
+}
+
+const tmp = new THREE.Vector3();
+function updateEnvironment(dt) {
+  const hour = currentHour();
+  // 태양·달
+  const ha = (hour - SOL.noon) * 15;
+  const sun = altAz(ha, SOL.decl);
+  const moon = altAz(ha - PHASE * 360, SOL.decl * 0.9);
+  const sunDir = displayDir(sun.alt, sun.az), moonDir = displayDir(moon.alt, moon.az);
+  U.uSunDir.value.copy(sunDir); U.uMoonDir.value.copy(moonDir);
+  const e = sun.alt;
+
+  // 날씨 목표값 → 부드럽게
+  const key = st.weatherSel === 'auto' ? (st.liveWx || 'clear') : st.weatherSel;
+  const target = WX[key];
+  const k = MANUAL ? 1 : 1 - Math.exp(-dt * 0.8);
+  for (const p of ['cloud', 'over', 'rain', 'snow', 'fog', 'wet', 'wind']) st.wx[p] = lerp(st.wx[p], target[p], k);
+  const wx = st.wx;
+
+  const sk = skyAt(e);
+  const night = smooth(2, -10, e);
+  U.uZenith.value.copy(sk.zen); U.uHorizon.value.copy(sk.hor);
+  U.uSunsetAmt.value = Math.exp(-Math.pow((e - 1.5) / 5.5, 2)) * 0.85 * (1 - wx.over * 0.8);
+  const warm = smooth(18, 0, e);
+  const sunC = vlerp(lin('#fff3e0'), lin('#ff7a30'), warm);
+  const sunI = smooth(-1.5, 6, e) * 2.6;
+  U.uSunCol.value.copy(sunC).multiplyScalar(sunI);
+  U.uSunVis.value = smooth(-1.2, 0.8, e);
+  U.uSunLight.value.copy(sunC).multiplyScalar(sunI * (1 - wx.over * 0.78));
+  U.uOvercast.value = wx.over;
+  U.uNight.value = night;
+  const moonVis = smooth(-2, 6, moon.alt) * (0.25 + 0.75 * MOON_ILLUM) * night;
+  U.uMoonVis.value = moonVis;
+  U.uMoonLight.value.copy(lin('#6f86b8')).multiplyScalar(0.11 * moonVis * (1 - wx.over * 0.6));
+  const amb = vlerp(sk.zen, sk.hor, 0.4).multiplyScalar(0.9 * (1 - wx.over * 0.25));
+  amb.add(tmp.set(0.02, 0.028, 0.055).multiplyScalar(night));
+  U.uAmbSky.value.copy(amb);
+  U.uAmbGround.value.copy(amb).multiplyScalar(0.35);
+  U.uStars.value = night * (1 - wx.cloud * 0.6);
+  U.uExposure.value = lerp(0.78, 1.9, night);
+  U.uCloudCover.value = wx.cloud;
+  U.uFogDensity.value = 0.0011 * wx.fog;
+  const windSp = st.weatherSel === 'auto' ? st.liveWind : 2.5;
+  grassU.uWind.value = clamp(0.22 + windSp * 0.05 + wx.wind, 0.08, 1.1);
+  U.uCloudWind.value.set(0.004 + windSp * 0.0006, 0.0015);
+  precipU.uRain.value = wx.rain; precipU.uSnowFall.value = wx.snow;
+  rain.visible = wx.rain > 0.02; snowfall.visible = wx.snow > 0.02;
+
+  // 계절
+  const w = seasonWeights(st.season);
+  const mixS = prop => { const v = new THREE.Vector3(); for (const s in w) if (w[s]) v.add(lin(SEASONS[s][prop]).multiplyScalar(w[s])); return v; };
+  const mixN = prop => { let v = 0; for (const s in w) v += SEASONS[s][prop] * w[s]; return v; };
+  grassU.uBase.value.copy(mixS('base')); grassU.uTip.value.copy(mixS('tip')); grassU.uDry.value.copy(mixS('dry'));
+  const snowCover = smooth(0.5, 0.9, mixN('snow'));
+  grassU.uSnow.value = snowCover; grassU.uHeightScale.value = mixN('hs'); grassU.uFlower.value = smooth(0.5, 1, mixN('flower'));
+  grassU.uWet.value = wx.wet; terrainU.uWet.value = wx.wet * 0.7;
+  terrainU.uGround.value.copy(vlerp(mixS('ground'), lin('#d7dde6'), 0).multiplyScalar(1));
+  terrainU.uFieldFar.value.copy(vlerp(mixS('base'), mixS('tip'), 0.62).lerp(mixS('dry'), 0.15).multiplyScalar(1.0)).lerp(mixS('far'), snowCover); terrainU.uRock.value.copy(mixS('rock'));
+  terrainU.uSnow.value = snowCover;
+  floatU.uMode.value.set(w.spring > 0.5 ? 0.35 : 0, w.summer > 0.5 ? 0.6 : 0, w.autumn > 0.5 ? 0.25 : 0, w.summer > 0.5 && night < 0.5 ? 0.25 : 0);
+  floaters.visible = wx.rain < 0.5 && wx.snow < 0.5;
+
+  const sname = Object.keys(w).sort((a, b) => w[b] - w[a])[0];
+  return { hour, sname, key };
+}
+
+// ───────── 마우스 → 잔디 위 궤적
+const ray = new THREE.Raycaster();
+function trackMouse(dt) {
+  const m = st.mouse;
+  for (const p of st.trail) p.age += dt;
+  if (m.has && m.moved) {
+    ray.setFromCamera(m.ndc, camera);
+    const o = ray.ray.origin, d = ray.ray.direction;
+    if (d.y < -0.01) {
+      const t = (0.32 - o.y) / d.y, x = o.x + d.x * t, z = o.z + d.z * t;
+      if (t < 60) {
+        if (m.last) {
+          const vx = (x - m.last.x) / Math.max(dt, 1e-3), vz = (z - m.last.z) / Math.max(dt, 1e-3);
+          const sp = Math.hypot(vx, vz);
+          const step = Math.hypot(x - m.lastAdd.x, z - m.lastAdd.z);
+          if (step > 0.18 && sp > 0.2) {
+            const p = st.trail[st.ti = (st.ti + 1) % TRAIL];
+            const sc = Math.min(1, 3 / Math.max(sp, 1e-3));
+            Object.assign(p, { x, z, vx: vx * sc / 3, vz: vz * sc / 3, age: 0, amp: clamp(0.45 + sp / 8, 0.45, 1.25) });
+            m.lastAdd = { x, z };
+          }
+        } else m.lastAdd = { x, z };
+        m.last = { x, z };
+      } else m.last = null;
+    } else m.last = null;
+    m.moved = false;
+  }
+  st.trail.forEach((p, i) => {
+    const a = p.age;
+    trailVec[i].set(p.x, p.z, p.vx, p.vz);
+    trailS[i] = a > 6 ? 0 : Math.max(0, p.amp * Math.exp(-a * 1.25) * (1 + 0.35 * Math.sin(a * 7.5) * Math.exp(-a * 1.8)));
+  });
+}
+
+// ───────── 크기
+function resize() {
+  const w = innerWidth, h = innerHeight;
+  renderer.setSize(w, h);
+  camera.aspect = w / h; camera.updateProjectionMatrix();
+  precipU.uPx.value = h * renderer.getPixelRatio() / (2 * Math.tan(camera.fov * D2R / 2));
+  buildGrass();
+}
+let rt = 0; addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(resize, 200); });
+resize();
+
+// ───────── UI
+const $ = id => document.getElementById(id);
+const ui = { clock: $('clock'), mode: $('mode'), meta: $('meta'), wx: $('wx'), hour: $('hour'), live: $('live'), lapse: $('lapse') };
+ui.meta.textContent = `서울 기준 · 일출 ${fmt(SOL.rise)} · 일몰 ${fmt(SOL.set)}`;
+function setMode(m) {
+  st.mode = m;
+  ui.live.setAttribute('aria-pressed', m === 'live');
+  ui.lapse.setAttribute('aria-pressed', m === 'lapse');
+  ui.mode.textContent = m === 'live' ? '실시간' : m === 'lapse' ? '타임랩스' : '미리보기';
+}
+ui.hour.addEventListener('input', () => { setMode('preview'); st.hour = +ui.hour.value; });
+ui.live.addEventListener('click', () => setMode('live'));
+ui.lapse.addEventListener('click', () => { st.hour = currentHour(); setMode('lapse'); });
+$('season').addEventListener('change', e => { st.season = e.target.value; });
+$('weather').addEventListener('change', e => { st.weatherSel = e.target.value; });
+const togglePanel = show => { $('panel').hidden = !show; $('reveal').hidden = show; };
+$('hide').addEventListener('click', () => togglePanel(false));
+$('reveal').addEventListener('click', () => togglePanel(true));
+addEventListener('keydown', e => { if ((e.key === 'h' || e.key === 'H') && !/SELECT|INPUT/.test(e.target.tagName)) togglePanel($('panel').hidden); });
+if (location.hash === '#wallpaper' || MANUAL) $('panel').hidden = true;
+
+const onMove = e => { st.mouse.ndc.set(e.clientX / innerWidth * 2 - 1, -(e.clientY / innerHeight) * 2 + 1); st.mouse.has = true; st.mouse.moved = true; };
+addEventListener('pointermove', onMove, { passive: true });
+document.addEventListener('pointerleave', () => { st.mouse.has = false; st.mouse.last = null; });
+
+// ───────── 실시간 날씨 (Open-Meteo, 키 불필요)
+async function fetchWeather() {
+  try {
+    const r = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${LAT}&longitude=${LON}&current=weather_code,cloud_cover,wind_speed_10m,temperature_2m&wind_speed_unit=ms`);
+    const j = await r.json();
+    const c = j.current;
+    st.liveWx = wmoToKey(c.weather_code); st.liveWind = c.wind_speed_10m;
+    st.wxStatus = `서울 실시간 · ${WX[st.liveWx].label} · ${Math.round(c.temperature_2m)}° · 바람 ${c.wind_speed_10m.toFixed(1)}m/s`;
+  } catch (err) {
+    st.liveWx = null;
+    st.wxStatus = '실시간 날씨에 연결하지 못해 맑음으로 표시 중 (배경화면 앱에서는 자동 연결)';
+  }
+}
+if (!MANUAL) { fetchWeather(); setInterval(fetchWeather, 15 * 60 * 1000); }
+
+let lastLabel = '';
+function paintUI(info) {
+  const s = fmt(info.hour);
+  const wxText = st.weatherSel === 'auto' ? st.wxStatus : `${WX[info.key].label} (수동)`;
+  const label = s + wxText + info.sname;
+  if (label !== lastLabel) {
+    lastLabel = label;
+    ui.clock.textContent = s;
+    if (st.mode !== 'preview') ui.hour.value = info.hour.toFixed(2);
+    ui.wx.textContent = `${wxText} · ${SEASON_NAME[info.sname]}`;
+  }
+}
+
+function frame(dt) {
+  st.t += dt;
+  U.uTime.value = st.t;
+  if (st.mode === 'lapse') st.hour = (st.hour + dt * 0.6) % 24;   // 하루 = 40초
+  const info = updateEnvironment(dt);
+  trackMouse(dt);
+  renderer.render(scene, camera);
+  paintUI(info);
+}
+
+if (MANUAL) {
+  // 렌더링 도구용: 프레임 단위 구동
+  window.__frame = (dt, o = {}) => {
+    st.mode = 'preview'; if (o.hour != null) st.hour = o.hour;
+    if (o.season) st.season = o.season; if (o.weather) st.weatherSel = o.weather;
+    if (o.mx != null) { st.mouse.ndc.set(o.mx / innerWidth * 2 - 1, -(o.my / innerHeight) * 2 + 1); st.mouse.has = true; st.mouse.moved = true; }
+    else { st.mouse.has = false; st.mouse.last = null; }
+    frame(dt);
+  };
+  window.__ready = true;
+  return;
+}
+
+let last = performance.now(), acc = 0;
+function loop(now) {
+  requestAnimationFrame(loop);
+  const dt = Math.min(0.05, (now - last) / 1000);
+  if (FPS_CAP) { acc += dt; last = now; if (acc < 1 / FPS_CAP) return; frame(acc); acc = 0; return; }
+  last = now;
+  if (document.hidden) return;
+  frame(dt);
+}
+requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
