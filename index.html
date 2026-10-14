@@ -87,7 +87,7 @@ if (!window.THREE) { document.body.insertAdjacentHTML('beforeend', '<div class="
 const LAT = 37.57, LON = 126.98;           // 서울
 const qs = new URLSearchParams(location.search);
 const MANUAL = qs.has('manual');
-const QUALITY = { low: 60000, med: 130000, high: 230000 }[qs.get('q')] || (Math.max(screen.width, screen.height) * (devicePixelRatio || 1) > 2600 ? 160000 : 130000);
+const QUALITY = { low: 80000, med: 170000, high: 280000, ultra: 400000 }[qs.get('q')] || (Math.max(screen.width, screen.height) * (devicePixelRatio || 1) > 2600 ? 220000 : 170000);
 const FPS_CAP = +qs.get('fps') || 0;
 const TRAIL = 16;
 
@@ -193,7 +193,7 @@ function wmoToKey(code) {
 
 // ───────── 렌더러 / 카메라
 const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance', preserveDrawingBuffer: MANUAL });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, MANUAL ? 1 : 1.5));
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, MANUAL ? 1 : qs.get('q') === 'ultra' ? 2 : 1.5));
 renderer.setSize(innerWidth, innerHeight);
 renderer.domElement.setAttribute('aria-label', '시간·날씨·계절에 따라 변하는 3D 초원');
 document.body.prepend(renderer.domElement);
@@ -395,7 +395,7 @@ terrain.frustumCulled = false;
 scene.add(terrain);
 
 // ───────── 3D 잔디 (인스턴싱)
-const SEG = 6;
+const SEG = 8;
 function bladeGeometry() {
   const pos = [], idx = [];
   for (let s = 0; s < SEG; s++) {
@@ -425,9 +425,10 @@ const grassMat = new THREE.ShaderMaterial({
   attribute vec3 iPos; attribute vec4 iA; attribute vec4 iB;
   uniform float uWind, uHeightScale; uniform vec2 uWindDir;
   uniform vec4 uTrail[TRAIL]; uniform float uTrailS[TRAIL];
-  varying float vT; varying vec3 vWorld; varying vec3 vNormal; varying float vSeed; varying float vVar; varying float vShadow; varying float vPatch;
+  varying float vT; varying vec3 vWorld; varying vec3 vNormal; varying float vSeed; varying float vVar; varying float vShadow; varying float vPatch; varying float vX;
   void main(){
     float t = position.y;
+    vX = position.x / max(pow(1.0 - t, 0.62), 0.05);
     float h = iA.y * uHeightScale;
     float rot = iA.x;
     vec2 f = vec2(cos(rot), sin(rot));
@@ -459,7 +460,7 @@ const grassMat = new THREE.ShaderMaterial({
   }`,
   fragmentShader: COMMON + /* glsl */`
   uniform vec3 uBase, uTip, uDry; uniform float uSnow, uWet, uFlower;
-  varying float vT; varying vec3 vWorld; varying vec3 vNormal; varying float vSeed; varying float vVar; varying float vShadow; varying float vPatch;
+  varying float vT; varying vec3 vWorld; varying vec3 vNormal; varying float vSeed; varying float vVar; varying float vShadow; varying float vPatch; varying float vX;
   void main(){
     vec3 N = normalize(vNormal);
     if (!gl_FrontFacing) N = vec3(-N.x, N.y, -N.z);
@@ -468,6 +469,7 @@ const grassMat = new THREE.ShaderMaterial({
     col = mix(col, uDry, clamp(vVar + (vPatch - 0.45) * 0.9, 0.0, 1.0) * smoothstep(0.15, 1.0, t));
     col *= 0.78 + 0.44 * vPatch;
     col *= 0.62 + 0.6 * vSeed;
+    col *= 0.9 + 0.16 * (1.0 - abs(vX));   // 가운데 잎맥은 밝게, 가장자리는 어둡게
     float snow = uSnow * smoothstep(0.3, 1.0, t) * step(0.3, fract(vSeed * 7.13));
     col = mix(col, vec3(0.88, 0.91, 0.96), snow * 0.85);
     // 봄 들꽃
@@ -495,11 +497,12 @@ let grass = null;
 function buildGrass() {
   if (grass) { scene.remove(grass); grass.geometry.dispose(); }
   seed = 11;
-  const N = QUALITY;
-  const g = bladeGeometry();
-  const iPos = new Float32Array(N * 3), iA = new Float32Array(N * 4), iB = new Float32Array(N * 4);
   const vfov = camera.fov * D2R;
   const hfov = 2 * Math.atan(Math.tan(vfov / 2) * camera.aspect);
+  // 16:9 기준 밀도를 유지: 여러 모니터에 걸친 넓은 화면이면 잔디 수를 늘림
+  const N = Math.round(QUALITY * clamp(Math.tan(vfov / 2) * camera.aspect / 0.83, 1, 3));
+  const g = bladeGeometry();
+  const iPos = new Float32Array(N * 3), iA = new Float32Array(N * 4), iB = new Float32Array(N * 4);
   const half = hfov / 2 + 7 * D2R;
   const dmin = 1.25, dmax = 110;
   for (let i = 0; i < N; i++) {
@@ -511,7 +514,7 @@ function buildGrass() {
     iPos[i * 3] = x; iPos[i * 3 + 1] = heightAt(x, z) - 0.02; iPos[i * 3 + 2] = z;
     const far = 1 + d * 0.03;
     iA[i * 4] = rnd() * Math.PI * 2;
-    iA[i * 4 + 1] = (0.16 + Math.pow(rnd(), 1.4) * 0.6) * (0.6 + clump * 0.85) * (1 + d * 0.004) * smooth(dmax, dmax * 0.6, d);
+    iA[i * 4 + 1] = (0.12 + Math.pow(rnd(), 1.4) * 0.45) * (0.6 + clump * 0.85) * (1 + d * 0.004) * smooth(dmax, dmax * 0.6, d);
     iA[i * 4 + 2] = (0.007 + rnd() * 0.006) * far;
     iA[i * 4 + 3] = rnd();
     iB[i * 4] = (rnd() - 0.5) * 0.8;
@@ -607,6 +610,178 @@ const floatMat = new THREE.ShaderMaterial({
 const floaters = new THREE.Points(floatGeo, floatMat); floaters.frustumCulled = false;
 scene.add(floaters);
 
+// ───────── 새 떼 (먼 하늘을 가로지르는 실루엣, 위치는 셰이더에서 시간으로 계산)
+const BIRD_FLOCKS = 4, BIRD_PER = 11;
+const birdU = Object.assign({}, U, { uBirds: { value: 0 }, uSpan: { value: 0.83 } });
+const birdGeo = (() => {
+  // 로컬 좌표: +X 진행 방향, ±Z 날개. |z| 가 클수록(날개 끝) 크게 펄럭임
+  const P = [];
+  for (const s of [1, -1]) P.push(0.18, 0, 0, -0.16, 0, 0, 0.04, 0, 0.5 * s, 0.04, 0, 0.5 * s, -0.16, 0, 0, -0.2, 0, s);
+  P.push(-0.12, 0, 0, -0.42, 0, 0.1, -0.42, 0, -0.1);   // 꼬리
+  P.push(0.32, 0, 0, 0.12, 0, 0.05, 0.12, 0, -0.05);    // 머리
+  const g = new THREE.InstancedBufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(P, 3));
+  const N = BIRD_FLOCKS * BIRD_PER, a = new Float32Array(N * 4);
+  for (let i = 0; i < N; i++) a.set([Math.floor(i / BIRD_PER), i % BIRD_PER, rnd(), rnd()], i * 4);
+  g.setAttribute('iBird', new THREE.InstancedBufferAttribute(a, 4));
+  g.instanceCount = N;
+  return g;
+})();
+const birdMat = new THREE.ShaderMaterial({
+  uniforms: birdU, side: THREE.DoubleSide,
+  vertexShader: COMMON + /* glsl */`
+  uniform float uBirds, uSpan; attribute vec4 iBird; varying vec3 vWorld;
+  void main(){
+    float f = iBird.x, k = iBird.y, s = iBird.z;
+    // 무리마다 주기적으로 화면을 가로지름. 회차(c)마다 높이·거리·방향·마릿수가 바뀜
+    float P = 46.0 + hash12(vec2(f, 3.1)) * 30.0;
+    float cyc = (uTime + hash12(vec2(f, 7.7)) * P) / P;
+    float c = floor(cyc), u = fract(cyc);
+    vec2 hc = vec2(f * 13.1 + 1.0, c);
+    float n = 3.0 + floor(hash12(hc + 0.5) * 9.0);
+    if (hash12(hc + 1.7) >= uBirds || k >= n) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+    float dist = 70.0 + hash12(hc + 2.3) * 110.0;
+    float elev = radians(6.0 + hash12(hc + 3.9) * 12.0);
+    float dirS = hash12(hc + 4.4) < 0.5 ? -1.0 : 1.0;
+    float hd = (hash12(hc + 5.2) - 0.5) * 0.7;
+    vec3 fwd = vec3(dirS * cos(hd), 0.0, sin(hd));
+    vec3 side = vec3(-fwd.z, 0.0, fwd.x);
+    float L = dist * uSpan * 2.2;
+    vec3 C = vec3(0.0, uCamPos.y + dist * tan(elev), -dist) + fwd * mix(-L, L, u);
+    C.y += sin(uTime * 0.25 + f * 2.0) * 2.0;
+    // 대형: V자 또는 느슨한 무리
+    vec3 off;
+    if (hash12(hc + 6.6) < 0.5) {
+      float j = ceil(k * 0.5), sd = mod(k, 2.0) < 0.5 ? 1.0 : -1.0;
+      off = -fwd * j * 1.7 + side * sd * j * 1.5;
+    } else {
+      off = fwd * (hash12(vec2(k, c) + f) - 0.5) * 9.0 + side * (hash12(vec2(c, k) + f * 3.0) - 0.5) * 9.0 + vec3(0.0, (iBird.w - 0.5) * 3.0, 0.0);
+    }
+    off += vec3(sin(uTime * 0.9 + s * 20.0), sin(uTime * 0.7 + s * 11.0) * 0.6, cos(uTime * 0.8 + s * 17.0)) * 0.5;
+    // 날갯짓: 가끔 활공
+    float ph = uTime * (8.0 + s * 3.0) + s * 40.0;
+    float glide = smoothstep(0.35, 0.65, 0.5 + 0.5 * sin(uTime * 0.35 + s * 9.0 + f));
+    float amp = mix(1.0, 0.1, glide);
+    float w = abs(position.z);
+    float y = (sin(ph - w * 0.9) * 0.75 * w) * amp + 0.12 * w;
+    vec3 lp = vec3(position.x, y, position.z) * (1.9 + 0.6 * iBird.w);
+    vec3 wp = C + off + fwd * lp.x + side * lp.z + vec3(0.0, lp.y, 0.0);
+    vWorld = wp;
+    gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
+  }`,
+  fragmentShader: COMMON + /* glsl */`
+  varying vec3 vWorld;
+  void main(){
+    vec3 c = uAmbSky * 0.22 + uSunLight * 0.025 + vec3(0.012, 0.013, 0.016);
+    c = applyFog(c, vWorld);
+    gl_FragColor = vec4(tonemap(c), 1.0);
+  }`,
+});
+const birds = new THREE.Mesh(birdGeo, birdMat); birds.frustumCulled = false;
+scene.add(birds);
+
+// ───────── 나비 (낮, 봄·여름 잔디 위. 마우스가 다가가면 피함)
+const BUTTER_N = 26;
+const butterU = Object.assign({}, U, {
+  uButter: { value: 0 }, uSpan: birdU.uSpan, uTrail: { value: trailVec }, uTrailS: { value: trailS }, uWind: grassU.uWind, uWindDir: grassU.uWindDir,
+});
+const butterGeo = (() => {
+  // 앞날개·뒷날개(좌우) + 몸통. aW = (날개 가로 u, 날개 세로 v, 종류 0앞/1뒤/2몸통)
+  const P = [], W = [];
+  const quad = (x0, x1, z0, z1, kind) => {
+    const v = [[x0, z0, 0, 0], [x1, z0, 1, 0], [x1, z1, 1, 1], [x0, z0, 0, 0], [x1, z1, 1, 1], [x0, z1, 0, 1]];
+    for (const [x, z, u, w] of v) { P.push(x, 0, z); W.push(u, w, kind); }
+  };
+  for (const s of [1, -1]) { quad(-0.1, 0.55, 0, s, 0); quad(-0.6, 0.05, 0, 0.78 * s, 1); }
+  quad(-0.5, 0.45, -0.05, 0.05, 2);
+  const g = new THREE.InstancedBufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(P, 3));
+  g.setAttribute('aW', new THREE.Float32BufferAttribute(W, 3));
+  const a = new Float32Array(BUTTER_N * 4);
+  for (let i = 0; i < BUTTER_N; i++) a.set([rnd(), 2.5 + Math.pow(rnd(), 1.3) * 11, rnd() * 2 - 1, rnd()], i * 4);
+  g.setAttribute('iB', new THREE.InstancedBufferAttribute(a, 4));
+  g.instanceCount = BUTTER_N;
+  return g;
+})();
+const butterMat = new THREE.ShaderMaterial({
+  uniforms: butterU, side: THREE.DoubleSide,
+  defines: { TRAIL },
+  vertexShader: COMMON + /* glsl */`
+  uniform float uButter, uSpan, uWind; uniform vec2 uWindDir; uniform vec4 uTrail[TRAIL]; uniform float uTrailS[TRAIL];
+  attribute vec3 aW; attribute vec4 iB;
+  varying vec3 vW; varying float vSp; varying vec3 vWorld; varying vec3 vN;
+  vec2 wander(float t, float s){ return vec2(sin(t * 1.3 + s * 9.0) * 1.6 + sin(t * 3.1 + s) * 0.5, cos(t * 1.1 + s * 4.0) * 1.2 + sin(t * 2.7 + 1.0) * 0.4); }
+  void main(){
+    float s = iB.x;
+    if (fract(s * 7.13) >= uButter) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+    float dist = iB.y;
+    vec3 home = vec3(iB.z * dist * uSpan * 0.85, 0.0, -dist);
+    float t = uTime * (0.22 + s * 0.12) + iB.w * 50.0;
+    vec2 w0 = wander(t, s), w1 = wander(t + 0.03, s);
+    vec3 p = home + vec3(w0.x, 0.0, w0.y);
+    p.xz += uWindDir * uWind * sin(uTime * 0.4 + s * 6.0) * 0.4;
+    float fl = uTime * (11.0 + s * 5.0) + s * 30.0;
+    p.y = 0.3 + 0.28 * pow(sin(t * 1.7 + s * 5.0), 2.0) + sin(fl) * 0.015;
+    // 마우스 궤적 근처면 위·바깥으로 피함
+    for (int i = 0; i < TRAIL; i++) {
+      float ts = uTrailS[i];
+      if (ts <= 0.002) continue;
+      vec2 d = p.xz - uTrail[i].xy; float l = length(d);
+      if (l < 1.5) { float k = (1.5 - l) * ts; p.xz += d / (l + 1e-3) * k * 0.8; p.y += k * 0.45; }
+    }
+    vec2 v = w1 - w0;
+    vec3 fwd = normalize(vec3(v.x, 0.0, v.y) + vec3(1e-4, 0.0, 0.0));
+    vec3 side = vec3(-fwd.z, 0.0, fwd.x);
+    // 날갯짓: 날개를 몸통 축으로 회전 (뒷날개는 살짝 늦게)
+    float kind = aW.z;
+    float th = 0.25 + 1.05 * (0.5 + 0.5 * sin(fl - (kind > 0.5 ? 0.3 : 0.0)));
+    vec3 lp = position;
+    float r = abs(position.z), sg = sign(position.z);
+    vec3 n = vec3(0.0, 1.0, 0.0);
+    if (kind < 1.5) { lp = vec3(position.x, r * sin(th), sg * r * cos(th)); n = vec3(0.0, cos(th), -sg * sin(th)); }
+    lp *= 0.05 + 0.025 * fract(s * 3.3);
+    vec3 wp = p + fwd * lp.x + side * lp.z + vec3(0.0, lp.y, 0.0);
+    vW = aW; vSp = s; vWorld = wp; vN = fwd * n.x + side * n.z + vec3(0.0, n.y, 0.0);
+    gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
+  }`,
+  fragmentShader: COMMON + /* glsl */`
+  varying vec3 vW; varying float vSp; varying vec3 vWorld; varying vec3 vN;
+  void main(){
+    float kind = vW.z;
+    vec3 col;
+    if (kind > 1.5) { col = vec3(0.05, 0.045, 0.04); }
+    else {
+      // 날개 모양: 몸통 쪽이 좁은 둥근 날개 (초타원)
+      vec2 q = vec2(vW.x * 2.0 - 1.0, vW.y * 2.0 - 1.0);
+      float d = pow(abs(q.x), 2.4) + pow(abs(q.y), 2.4);
+      if (d > 1.0) discard;
+      float sp = floor(fract(vSp * 5.17) * 4.0);
+      if (sp < 0.5) {        // 배추흰나비
+        col = vec3(0.95, 0.95, 0.9);
+        if (kind < 0.5 && q.x > 0.2 && q.y > 0.35) col = vec3(0.12);
+        if (length(q - vec2(-0.1, 0.1)) < 0.16) col = vec3(0.15);
+      } else if (sp < 1.5) { // 노랑나비
+        col = vec3(1.0, 0.84, 0.25);
+        if (d > 0.82) col *= 0.55;
+      } else if (sp < 2.5) { // 주황 (제왕나비 느낌)
+        col = vec3(1.0, 0.48, 0.08);
+        if (abs(fract(q.x * 2.5 + q.y * 1.5) - 0.5) < 0.06) col = vec3(0.08);
+        if (d > 0.7) col = fract((q.x + q.y) * 6.0) < 0.3 ? vec3(0.95) : vec3(0.06);
+      } else {               // 부전나비(파랑)
+        col = mix(vec3(0.3, 0.5, 1.0), vec3(0.75, 0.85, 1.0), d);
+        if (d > 0.9) col = vec3(0.9);
+      }
+    }
+    vec3 N = normalize(vN); if (!gl_FrontFacing) N = -N;
+    float ndl = abs(dot(N, uSunDir)) * 0.6 + 0.4;
+    vec3 c = col * (uSunLight * ndl * 0.75 + uAmbSky * 1.1 + uMoonLight);
+    c = applyFog(c, vWorld);
+    gl_FragColor = vec4(tonemap(c), 1.0);
+  }`,
+});
+const butterflies = new THREE.Mesh(butterGeo, butterMat); butterflies.frustumCulled = false;
+scene.add(butterflies);
+
 // ───────── 상태
 const st = {
   t: 0, mode: 'live', hour: 12, season: 'auto', weatherSel: 'auto', liveWx: null, liveWind: 2.5, wxStatus: '날씨 확인 중…',
@@ -691,6 +866,12 @@ function updateEnvironment(dt) {
   terrainU.uSnow.value = snowCover;
   floatU.uMode.value.set(w.spring > 0.5 ? 0.35 : 0, w.summer > 0.5 ? 0.6 : 0, w.autumn > 0.5 ? 0.25 : 0, w.summer > 0.5 && night < 0.5 ? 0.25 : 0);
   floaters.visible = wx.rain < 0.5 && wx.snow < 0.5;
+  // 새: 낮, 특히 아침·저녁에 자주. 나비: 맑은 낮, 봄·여름 위주. 비·눈·짙은 안개면 숨김
+  const calm = (1 - wx.rain) * (1 - wx.snow) * clamp((6 - wx.fog) / 4, 0, 1);
+  const dusk = Math.exp(-Math.pow((e - 6) / 7, 2));
+  birdU.uBirds.value = smooth(-3, 6, e) * calm * (0.35 + 0.45 * dusk);
+  butterU.uButter.value = (w.spring + w.summer + 0.35 * w.autumn) * smooth(4, 14, e) * calm * (1 - wx.over * 0.6) * clamp(1.3 - grassU.uWind.value, 0, 1) * 0.8;
+  birds.visible = birdU.uBirds.value > 0.01; butterflies.visible = butterU.uButter.value > 0.01;
 
   const sname = Object.keys(w).sort((a, b) => w[b] - w[a])[0];
   return { hour, sname, key };
@@ -705,7 +886,7 @@ function trackMouse(dt) {
     ray.setFromCamera(m.ndc, camera);
     const o = ray.ray.origin, d = ray.ray.direction;
     if (d.y < -0.01) {
-      const t = (0.32 - o.y) / d.y, x = o.x + d.x * t, z = o.z + d.z * t;
+      const t = (0.24 - o.y) / d.y, x = o.x + d.x * t, z = o.z + d.z * t;
       if (t < 60) {
         if (m.last) {
           const vx = (x - m.last.x) / Math.max(dt, 1e-3), vz = (z - m.last.z) / Math.max(dt, 1e-3);
@@ -736,6 +917,7 @@ function resize() {
   renderer.setSize(w, h);
   camera.aspect = w / h; camera.updateProjectionMatrix();
   precipU.uPx.value = h * renderer.getPixelRatio() / (2 * Math.tan(camera.fov * D2R / 2));
+  birdU.uSpan.value = Math.tan(camera.fov * D2R / 2) * camera.aspect;
   buildGrass();
 }
 let rt = 0; addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(resize, 200); });

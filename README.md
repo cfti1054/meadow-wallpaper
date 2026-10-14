@@ -38,11 +38,17 @@ https://meadow-wallpaper.up.railway.app/#wallpaper
 | Windows | Lively Wallpaper | `+` (배경화면 추가) → 주소 입력 → 적용 |
 | Mac | Plash | 메뉴바 아이콘 → Add Website → 주소 입력 |
 
+### 멀티모니터 (Lively)
+
+Lively의 화면 배치 설정에서 **모든 화면에 걸쳐 확장(Span)** 을 고르면 한 장면이 여러 모니터에 이어서 펼쳐집니다.
+화면이 넓어지면 잔디 수가 자동으로 늘어나 밀도가 유지됩니다(16:9 기준 최대 3배). 좌우 배치에 가장 잘 어울리며,
+상하 배치는 모니터별(Per Screen) 표시를 권장합니다.
+
 ## 옵션 (주소 뒤에 붙이기)
 
 | 옵션 | 뜻 |
 |---|---|
-| `?q=low` / `?q=med` / `?q=high` | 잔디 양 (노트북 내장 그래픽은 `low` 권장) |
+| `?q=low` / `?q=med` / `?q=high` / `?q=ultra` | 잔디 양 (노트북 내장 그래픽은 `low` 권장, `ultra`는 고해상도 렌더링까지 켜는 외장 그래픽용) |
 | `?fps=30` | 초당 프레임 제한 (전력 절약) |
 
 예: `https://meadow-wallpaper.up.railway.app/?q=low&fps=30#wallpaper`
